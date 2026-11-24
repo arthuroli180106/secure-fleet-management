@@ -1,0 +1,6 @@
+{% extends "base.html" %}{% block content %}
+<h1>Archived records</h1>
+<p class="muted">Archived records are hidden from the active fleet but their history is retained. You can restore a record if it was archived by mistake.</p>
+<section class="panel"><h2>Vehicles</h2>{% for v in vehicles %}<div class="record-row"><div><strong>{{ v.plate }} · {{ v.make }} {{ v.model }}</strong><div class="muted">{{ v.archive_reason }} · {{ v.archived_at }}</div></div><form method="post" action="{{ url_for('fleet.restore_vehicle', vehicle_id=v.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="small">Restore</button></form></div>{% else %}<p>No archived vehicles.</p>{% endfor %}</section>
+<section class="panel"><h2>Drivers</h2>{% for d in drivers %}<div class="record-row"><div><strong>{{ d.full_name }}</strong><div class="muted">{{ d.archive_reason }} · {{ d.archived_at }}</div></div><form method="post" action="{{ url_for('fleet.restore_driver', driver_id=d.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="small">Restore</button></form></div>{% else %}<p>No archived drivers.</p>{% endfor %}</section>
+{% endblock %}
