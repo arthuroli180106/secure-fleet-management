@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block content %}
+<section class="panel">
+<h1>{{ item.vehicle.plate }} · {{ item.vehicle.make }} {{ item.vehicle.model }}</h1>
+<p><strong>{{ item.description }}</strong></p>
+<p class="muted">Service date: {{ item.service_date }} · Cost: {{ item.cost }} · Status: {{ item.status }}</p>
+<h2>Vehicle photos</h2>
+{% if item.photos %}<div class="photo-grid">{% for photo in item.photos %}<a href="{{ url_for('fleet.maintenance_photo', photo_id=photo.id) }}" target="_blank" rel="noopener"><img src="{{ url_for('fleet.maintenance_photo', photo_id=photo.id) }}" alt="Photo of {{ item.vehicle.plate }}"><span>{{ photo.original_name }}</span></a>{% endfor %}</div>{% else %}<p>No photos attached to this maintenance record yet.</p>{% endif %}
+{% if current_user.role in ['admin','manager'] %}<form method="post" action="{{ url_for('fleet.add_maintenance_photos', maintenance_id=item.id) }}" enctype="multipart/form-data"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Add more photos<input name="photos" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple required></label><button>Upload photos</button></form>{% endif %}
+<p><a href="{{ url_for('fleet.dashboard') }}">Back to dashboard</a></p>
+</section>
+{% endblock %}
