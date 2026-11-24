@@ -1,6 +1,7 @@
 import io
 from datetime import date
 from app.extensions import db
+from PIL import Image
 from app.models import Vehicle, Driver, MaintenancePhoto
 
 def login(client, email, password):
@@ -86,13 +87,15 @@ def test_maintenance_accepts_and_protects_photo_upload(client, app):
         vehicle_id = vehicle.id
 
     login(client, "manager@example.test", "Manager-Password-123!")
-    png_header = bytes.fromhex("89504E470D0A1A0A") + b"demo-image-data"
+    png_stream = io.BytesIO()
+    Image.new("RGB", (1, 1), (20, 40, 60)).save(png_stream, format="PNG")
+    png_stream.seek(0)
     response = client.post("/maintenance/new", data={
         "vehicle_id": str(vehicle_id),
         "description": "Front bumper inspection",
         "cost": "150.00",
         "service_date": date.today().isoformat(),
-        "photos": (io.BytesIO(png_header), "front-bumper.png"),
+        "photos": (png_stream, "front-bumper.png"),
     }, content_type="multipart/form-data")
     assert response.status_code == 302
 
