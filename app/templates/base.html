@@ -16,6 +16,7 @@
 <a href="{{ url_for('fleet.new_driver') }}">Add driver</a>
 <a href="{{ url_for('fleet.new_maintenance') }}">Maintenance</a>
 <a href="{{ url_for('fleet.new_payment') }}">Payment</a>
+<a href="{{ url_for('fleet.archive_list') }}">Archive</a>
 {% endif %}
 {% if current_user.role == 'admin' %}<a href="{{ url_for('fleet.audit_log') }}">Audit log</a>{% endif %}
 <form method="post" action="{{ url_for('auth.logout') }}" class="inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="link-button">Log out</button></form>
