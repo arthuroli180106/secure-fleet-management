@@ -1,11 +1,13 @@
 import os
 import uuid
+from io import BytesIO
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from flask import Blueprint, render_template, request, redirect, url_for, flash, abort, current_app, send_from_directory
 from flask_login import login_required, current_user
 from sqlalchemy.exc import IntegrityError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from .extensions import db
 from .models import Vehicle, Driver, Maintenance, MaintenancePhoto, Payment, AuditEvent, utcnow
 from .security import roles_required
@@ -24,14 +26,26 @@ def log_event(action, entity_type, entity_id=None, details=""):
 def active_vehicles():
     return Vehicle.query.filter(Vehicle.archived_at.is_(None)).order_by(Vehicle.plate).all()
 
-def image_signature_is_valid(data, suffix):
-    if suffix in {".jpg", ".jpeg"}:
-        return data.startswith(bytes.fromhex("FFD8FF"))
-    if suffix == ".png":
-        return data.startswith(bytes.fromhex("89504E470D0A1A0A"))
-    if suffix == ".webp":
-        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
-    return False
+def sanitize_image(data, suffix):
+    formats = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP"}
+    try:
+        with Image.open(BytesIO(data)) as source:
+            if source.format != formats[suffix] or source.width * source.height > 25_000_000:
+                raise ValueError("Unsupported or excessively large image.")
+            source.verify()
+        with Image.open(BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((4000, 4000))
+            if formats[suffix] == "JPEG":
+                image = image.convert("RGB")
+            output = BytesIO()
+            image.save(output, format=formats[suffix], optimize=True)
+            cleaned = output.getvalue()
+            if len(cleaned) > MAX_IMAGE_SIZE:
+                raise ValueError("Processed photo exceeds the 5 MB limit.")
+            return cleaned
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as error:
+        raise ValueError("The uploaded file is not a valid supported image.") from error
 
 def save_maintenance_images(maintenance):
     files = request.files.getlist("photos")
@@ -45,8 +59,9 @@ def save_maintenance_images(maintenance):
         if suffix not in ALLOWED_IMAGE_EXTENSIONS:
             raise ValueError("Use only JPG, PNG, or WEBP photos.")
         data = uploaded.read(MAX_IMAGE_SIZE + 1)
-        if not data or len(data) > MAX_IMAGE_SIZE or not image_signature_is_valid(data, suffix):
-            raise ValueError("Each photo must be a valid image no larger than 5 MB.")
+        if not data or len(data) > MAX_IMAGE_SIZE:
+            raise ValueError("Each photo must be no larger than 5 MB.")
+        data = sanitize_image(data, suffix)
         filename = f"{uuid.uuid4().hex}{suffix}"
         target = os.path.join(uploads_dir, filename)
         with open(target, "xb") as destination:
