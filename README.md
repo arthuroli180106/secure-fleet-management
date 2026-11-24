@@ -8,8 +8,8 @@ A security-focused fleet management application built for a small vehicle-rental
 - Role-based access control: `admin`, `manager`, and `staff`
 - CSRF protection, secure session settings, login rate limiting
 - Fleet inventory and vehicle status tracking
-- Driver records
-- Maintenance records
+- Archive and restore vehicles (for example, when sold) and drivers (when a contract ends), with an audit trail and preserved financial/maintenance history
+- Maintenance records with protected JPG, PNG, and WEBP photo attachments
 - Payment records (amounts only; no bank/card details)
 - Append-only-style audit event recording for important actions
 - Input validation and server-side authorization
@@ -26,14 +26,17 @@ python -m venv .venv
 # macOS/Linux
 source .venv/bin/activate
 # Windows PowerShell
-# .venv\Scripts\Activate.ps1
+# .venv\\Scripts\\Activate.ps1
 
 pip install -r requirements.txt
 cp .env.example .env
 flask --app run.py init-db
+flask --app run.py upgrade-db
 flask --app run.py seed-demo
 flask --app run.py run --debug
 ```
+
+If you already have a local copy, pull the latest code and run `flask --app run.py upgrade-db` before restarting the app. This adds the archive fields and photo table while preserving existing records.
 
 Open http://127.0.0.1:5000.
 
@@ -44,9 +47,17 @@ Demo accounts (change immediately; local demo only):
 
 Do not use demo credentials in a deployed environment.
 
+## Photo uploads
+
+Photos are limited to JPG, PNG, and WEBP, with a 5 MB per-file limit. They are stored in the local `instance/uploads/` folder and served only to authenticated users. The instance folder is excluded from Git. Configure private persistent storage, backups, malware scanning, and retention rules before production use.
+
+## Pix integration status
+
+Pix automation is not enabled yet. It requires an official API from the bank or payment provider receiving the Pix payments, plus a verified webhook and reconciliation rules. Never put bank passwords, private keys, or API secrets in GitHub. The exact provider must be selected before implementing the connector.
+
 ## Environment variables
 
-See `.env.example`. A unique `SECRET_KEY` is required outside development. Set `FLASK_ENV=production`, `SESSION_COOKIE_SECURE=true`, and serve only behind HTTPS in production.
+See `.env.example`. A unique `SECRET_KEY` is required outside development. Set `SESSION_COOKIE_SECURE=true` and serve only behind HTTPS in production.
 
 ## Security design
 
@@ -83,4 +94,4 @@ secure-fleet-management/
 
 ## Portfolio description
 
-**Secure Fleet Management System** — Built a Flask-based fleet management application with role-based access control, Argon2 password hashing, CSRF protection, rate-limited authentication, audit logging, input validation, and automated security-focused tests.
+**Secure Fleet Management System** — Built a Flask-based fleet management application with role-based access control, Argon2 password hashing, CSRF protection, rate-limited authentication, audit logging, secure maintenance photo uploads, vehicle/driver lifecycle management, input validation, and automated security-focused tests.
