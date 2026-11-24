@@ -1,13 +1,18 @@
+import os
+import uuid
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from flask import Blueprint, render_template, request, redirect, url_for, flash, abort
+from pathlib import Path
+from flask import Blueprint, render_template, request, redirect, url_for, flash, abort, current_app, send_from_directory
 from flask_login import login_required, current_user
 from sqlalchemy.exc import IntegrityError
 from .extensions import db
-from .models import Vehicle, Driver, Maintenance, Payment, AuditEvent
+from .models import Vehicle, Driver, Maintenance, MaintenancePhoto, Payment, AuditEvent, utcnow
 from .security import roles_required
 
 fleet_bp = Blueprint("fleet", __name__)
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_IMAGE_SIZE = 5 * 1024 * 1024
 
 def log_event(action, entity_type, entity_id=None, details=""):
     db.session.add(AuditEvent(
@@ -16,14 +21,48 @@ def log_event(action, entity_type, entity_id=None, details=""):
         details=details[:500], ip_address=request.remote_addr
     ))
 
+def active_vehicles():
+    return Vehicle.query.filter(Vehicle.archived_at.is_(None)).order_by(Vehicle.plate).all()
+
+def image_signature_is_valid(data, suffix):
+    if suffix in {".jpg", ".jpeg"}:
+        return data.startswith(bytes.fromhex("FFD8FF"))
+    if suffix == ".png":
+        return data.startswith(bytes.fromhex("89504E470D0A1A0A"))
+    if suffix == ".webp":
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    return False
+
+def save_maintenance_images(maintenance):
+    files = request.files.getlist("photos")
+    uploads_dir = os.path.join(current_app.instance_path, "uploads")
+    os.makedirs(uploads_dir, mode=0o700, exist_ok=True)
+    for uploaded in files:
+        if not uploaded or not uploaded.filename:
+            continue
+        original = Path(uploaded.filename).name[:180]
+        suffix = Path(original).suffix.lower()
+        if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+            raise ValueError("Use only JPG, PNG, or WEBP photos.")
+        data = uploaded.read(MAX_IMAGE_SIZE + 1)
+        if not data or len(data) > MAX_IMAGE_SIZE or not image_signature_is_valid(data, suffix):
+            raise ValueError("Each photo must be a valid image no larger than 5 MB.")
+        filename = f"{uuid.uuid4().hex}{suffix}"
+        target = os.path.join(uploads_dir, filename)
+        with open(target, "xb") as destination:
+            destination.write(data)
+        db.session.add(MaintenancePhoto(
+            maintenance=maintenance, filename=filename, original_name=original
+        ))
+
 @fleet_bp.get("/")
 @login_required
 def dashboard():
-    return render_template("dashboard.html",
-        vehicles=Vehicle.query.order_by(Vehicle.plate).all(),
-        drivers=Driver.query.order_by(Driver.full_name).all(),
-        maintenance=Maintenance.query.order_by(Maintenance.service_date.desc()).limit(5).all(),
-        payments=Payment.query.order_by(Payment.due_date.desc()).limit(5).all())
+    vehicles = Vehicle.query.filter(Vehicle.archived_at.is_(None)).order_by(Vehicle.plate).all()
+    drivers = Driver.query.filter(Driver.archived_at.is_(None)).order_by(Driver.full_name).all()
+    maintenance = Maintenance.query.join(Vehicle).filter(Vehicle.archived_at.is_(None)).order_by(Maintenance.service_date.desc()).limit(5).all()
+    payments = Payment.query.join(Driver).filter(Driver.archived_at.is_(None)).order_by(Payment.due_date.desc()).limit(5).all()
+    return render_template("dashboard.html", vehicles=vehicles, drivers=drivers, maintenance=maintenance, payments=payments)
 
 @fleet_bp.route("/vehicles/new", methods=["GET", "POST"])
 @login_required
@@ -61,6 +100,8 @@ def new_vehicle():
 @roles_required("admin", "manager")
 def update_vehicle_status(vehicle_id):
     vehicle = db.session.get(Vehicle, vehicle_id) or abort(404)
+    if vehicle.archived_at:
+        abort(404)
     status = request.form.get("status", "")
     if status not in {"available", "rented", "maintenance", "inactive"}:
         abort(400)
@@ -68,6 +109,23 @@ def update_vehicle_status(vehicle_id):
     vehicle.status = status
     log_event("vehicle_status_changed", "vehicle", vehicle.id, f"{old} -> {status}")
     db.session.commit()
+    return redirect(url_for("fleet.dashboard"))
+
+@fleet_bp.post("/vehicles/<int:vehicle_id>/archive")
+@login_required
+@roles_required("admin", "manager")
+def archive_vehicle(vehicle_id):
+    vehicle = db.session.get(Vehicle, vehicle_id) or abort(404)
+    reason = request.form.get("reason", "").strip()
+    if not reason or len(reason) > 250:
+        flash("Enter a reason (for example, vehicle sold).", "error")
+        return redirect(url_for("fleet.dashboard"))
+    vehicle.archived_at = utcnow()
+    vehicle.archive_reason = reason
+    vehicle.status = "inactive"
+    log_event("vehicle_archived", "vehicle", vehicle.id, f"{vehicle.plate}: {reason}")
+    db.session.commit()
+    flash("Vehicle archived. Its payment and maintenance history was preserved.", "success")
     return redirect(url_for("fleet.dashboard"))
 
 @fleet_bp.route("/drivers/new", methods=["GET", "POST"])
@@ -89,11 +147,60 @@ def new_driver():
         return redirect(url_for("fleet.dashboard"))
     return render_template("driver_form.html")
 
+@fleet_bp.post("/drivers/<int:driver_id>/archive")
+@login_required
+@roles_required("admin", "manager")
+def archive_driver(driver_id):
+    driver = db.session.get(Driver, driver_id) or abort(404)
+    reason = request.form.get("reason", "").strip()
+    if not reason or len(reason) > 250:
+        flash("Enter a reason (for example, contract ended).", "error")
+        return redirect(url_for("fleet.dashboard"))
+    driver.archived_at = utcnow()
+    driver.archive_reason = reason
+    driver.active = False
+    log_event("driver_archived", "driver", driver.id, f"{driver.full_name}: {reason}")
+    db.session.commit()
+    flash("Driver archived. Their payment history was preserved.", "success")
+    return redirect(url_for("fleet.dashboard"))
+
+@fleet_bp.get("/archive")
+@login_required
+@roles_required("admin", "manager")
+def archive_list():
+    vehicles = Vehicle.query.filter(Vehicle.archived_at.is_not(None)).order_by(Vehicle.archived_at.desc()).all()
+    drivers = Driver.query.filter(Driver.archived_at.is_not(None)).order_by(Driver.archived_at.desc()).all()
+    return render_template("archive.html", vehicles=vehicles, drivers=drivers)
+
+@fleet_bp.post("/vehicles/<int:vehicle_id>/restore")
+@login_required
+@roles_required("admin", "manager")
+def restore_vehicle(vehicle_id):
+    vehicle = db.session.get(Vehicle, vehicle_id) or abort(404)
+    vehicle.archived_at = None
+    vehicle.archive_reason = None
+    vehicle.status = "available"
+    log_event("vehicle_restored", "vehicle", vehicle.id, f"Vehicle {vehicle.plate} restored")
+    db.session.commit()
+    return redirect(url_for("fleet.archive_list"))
+
+@fleet_bp.post("/drivers/<int:driver_id>/restore")
+@login_required
+@roles_required("admin", "manager")
+def restore_driver(driver_id):
+    driver = db.session.get(Driver, driver_id) or abort(404)
+    driver.archived_at = None
+    driver.archive_reason = None
+    driver.active = True
+    log_event("driver_restored", "driver", driver.id, f"Driver {driver.full_name} restored")
+    db.session.commit()
+    return redirect(url_for("fleet.archive_list"))
+
 @fleet_bp.route("/maintenance/new", methods=["GET", "POST"])
 @login_required
 @roles_required("admin", "manager")
 def new_maintenance():
-    vehicles = Vehicle.query.order_by(Vehicle.plate).all()
+    vehicles = active_vehicles()
     if request.method == "POST":
         try:
             vehicle_id = int(request.form.get("vehicle_id", "0"))
@@ -104,22 +211,65 @@ def new_maintenance():
             return render_template("maintenance_form.html", vehicles=vehicles)
         vehicle = db.session.get(Vehicle, vehicle_id)
         description = request.form.get("description", "").strip()
-        if not vehicle or not description or len(description) > 300 or cost < 0 or cost > Decimal("99999999.99"):
+        if not vehicle or vehicle.archived_at or not description or len(description) > 300 or cost < 0 or cost > Decimal("99999999.99"):
             flash("Please provide valid maintenance details.", "error")
             return render_template("maintenance_form.html", vehicles=vehicles)
         item = Maintenance(vehicle=vehicle, description=description, cost=cost, service_date=service_date)
         db.session.add(item)
-        db.session.flush()
-        log_event("maintenance_created", "maintenance", item.id, f"Vehicle {vehicle.plate}")
-        db.session.commit()
-        return redirect(url_for("fleet.dashboard"))
+        try:
+            db.session.flush()
+            save_maintenance_images(item)
+            log_event("maintenance_created", "maintenance", item.id, f"Vehicle {vehicle.plate}; photos: {len(item.photos)}")
+            db.session.commit()
+        except ValueError as error:
+            db.session.rollback()
+            flash(str(error), "error")
+            return render_template("maintenance_form.html", vehicles=vehicles)
+        except OSError:
+            db.session.rollback()
+            flash("The photos could not be saved. Please try again.", "error")
+            return render_template("maintenance_form.html", vehicles=vehicles)
+        return redirect(url_for("fleet.maintenance_detail", maintenance_id=item.id))
     return render_template("maintenance_form.html", vehicles=vehicles)
+
+@fleet_bp.get("/maintenance/<int:maintenance_id>")
+@login_required
+def maintenance_detail(maintenance_id):
+    item = db.session.get(Maintenance, maintenance_id) or abort(404)
+    return render_template("maintenance_detail.html", item=item)
+
+@fleet_bp.post("/maintenance/<int:maintenance_id>/photos")
+@login_required
+@roles_required("admin", "manager")
+def add_maintenance_photos(maintenance_id):
+    item = db.session.get(Maintenance, maintenance_id) or abort(404)
+    try:
+        save_maintenance_images(item)
+        if not item.photos:
+            flash("Choose at least one photo.", "error")
+        else:
+            log_event("maintenance_photos_added", "maintenance", item.id, f"Photos attached to {item.vehicle.plate}")
+            db.session.commit()
+            flash("Photos uploaded.", "success")
+    except ValueError as error:
+        db.session.rollback()
+        flash(str(error), "error")
+    except OSError:
+        db.session.rollback()
+        flash("The photos could not be saved. Please try again.", "error")
+    return redirect(url_for("fleet.maintenance_detail", maintenance_id=item.id))
+
+@fleet_bp.get("/maintenance-photos/<int:photo_id>")
+@login_required
+def maintenance_photo(photo_id):
+    photo = db.session.get(MaintenancePhoto, photo_id) or abort(404)
+    return send_from_directory(os.path.join(current_app.instance_path, "uploads"), photo.filename)
 
 @fleet_bp.route("/payments/new", methods=["GET", "POST"])
 @login_required
 @roles_required("admin", "manager")
 def new_payment():
-    drivers = Driver.query.order_by(Driver.full_name).all()
+    drivers = Driver.query.filter(Driver.archived_at.is_(None)).order_by(Driver.full_name).all()
     if request.method == "POST":
         try:
             driver_id = int(request.form.get("driver_id", "0"))
@@ -129,7 +279,7 @@ def new_payment():
             flash("Please provide valid payment details.", "error")
             return render_template("payment_form.html", drivers=drivers)
         driver = db.session.get(Driver, driver_id)
-        if not driver or amount <= 0 or amount > Decimal("99999999.99"):
+        if not driver or driver.archived_at or amount <= 0 or amount > Decimal("99999999.99"):
             flash("Please provide valid payment details.", "error")
             return render_template("payment_form.html", drivers=drivers)
         payment = Payment(driver=driver, amount=amount, due_date=due_date)
