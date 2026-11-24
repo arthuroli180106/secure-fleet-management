@@ -19,7 +19,7 @@ def create_app(test_config=None):
         REMEMBER_COOKIE_HTTPONLY=True,
         REMEMBER_COOKIE_SAMESITE="Lax",
         WTF_CSRF_TIME_LIMIT=3600,
-        MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+        MAX_CONTENT_LENGTH=12 * 1024 * 1024,
         RATELIMIT_STORAGE_URI=os.getenv("RATELIMIT_STORAGE_URI", "memory://"),
     )
     if test_config:
