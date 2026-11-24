@@ -32,6 +32,8 @@ class Vehicle(db.Model):
     year = db.Column(db.Integer, nullable=False)
     status = db.Column(db.String(20), nullable=False, default="available")
     notes = db.Column(db.String(500), nullable=True)
+    archived_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    archive_reason = db.Column(db.String(250), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
 class Driver(db.Model):
@@ -40,6 +42,8 @@ class Driver(db.Model):
     phone = db.Column(db.String(30), nullable=True)
     email = db.Column(db.String(254), nullable=True)
     active = db.Column(db.Boolean, nullable=False, default=True)
+    archived_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    archive_reason = db.Column(db.String(250), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
 class Maintenance(db.Model):
@@ -50,6 +54,14 @@ class Maintenance(db.Model):
     service_date = db.Column(db.Date, nullable=False)
     status = db.Column(db.String(20), nullable=False, default="scheduled")
     vehicle = db.relationship("Vehicle", backref="maintenance_records")
+
+class MaintenancePhoto(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    maintenance_id = db.Column(db.Integer, db.ForeignKey("maintenance.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = db.Column(db.String(80), nullable=False, unique=True)
+    original_name = db.Column(db.String(180), nullable=False)
+    uploaded_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    maintenance = db.relationship("Maintenance", backref=db.backref("photos", cascade="all, delete-orphan"))
 
 class Payment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
